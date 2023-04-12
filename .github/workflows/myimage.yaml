@@ -1,0 +1,62 @@
+name: MyImage
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+    types: [ labeled, unlabeled, opened, synchronize, reopened ]
+
+env:
+  GOLANG_VERSION: '1.18'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    permissions:
+      contents: write  # for git to push upgrade commit if not already deployed
+      packages: write  # for pushing packages to GHCR, which is used by cd.apps.n9.io to avoid polluting Quay with tags
+    runs-on: ubuntu-22.04
+    env:
+      GOPATH: /home/runner/work/argo-cd/argo-cd
+    steps:
+      - uses: actions/setup-go@4d34df0c2316fe8122ab82dc22947d607c0c91f9 # v4.0.0
+        with:
+          go-version: ${{ env.GOLANG_VERSION }}
+      - uses: actions/checkout@24cb9080177205b6e8c946b17badbe402adc938f # v3.4.0
+        with:
+          path: src/github.com/n9/argo-cd
+
+      # get image tag
+      - run: |
+          echo "tag=$(cat ./VERSION)-${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
+          echo "shorttag=$(cat ./VERSION)" >> $GITHUB_OUTPUT
+        working-directory: ./src/github.com/n9/argo-cd
+        id: image
+
+      # login
+      - run: |
+          docker login ghcr.io --username $USERNAME --password-stdin <<< "$PASSWORD"
+        if: github.event_name == 'push'
+        env:
+          USERNAME: ${{ github.actor }}
+          PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+
+      # build
+      - uses: docker/setup-qemu-action@e81a89b1732b9c48d79cd809d8d81d79c4647a18 # v2.1.0
+      - uses: docker/setup-buildx-action@f03ac48505955848960e80bbb68046aa35c7b9e7 # v2.4.1
+      - run: |
+          IMAGE_PLATFORMS=linux/amd64
+          echo "Building image for platforms: $IMAGE_PLATFORMS"
+          docker buildx build --platform $IMAGE_PLATFORMS --sbom=false --provenance=false --push="${{ github.event_name == 'push' }}" \
+            -t ghcr.io/n9/argo-cd/argocd:${{ steps.image.outputs.tag }} \
+            -t ghcr.io/n9/argo-cd/argocd:${{ steps.image.outputs.shorttag }} .
+        working-directory: ./src/github.com/n9/argo-cd
