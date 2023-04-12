@@ -1,0 +1,68 @@
+name: MyImage
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+    types: [ labeled, unlabeled, opened, synchronize, reopened ]
+
+env:
+  GOLANG_VERSION: '1.21'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    permissions:
+      contents: write  # for git to push upgrade commit if not already deployed
+      packages: write  # for pushing packages to GHCR, which is used by cd.apps.n9.io to avoid polluting Quay with tags
+    runs-on: ubuntu-22.04
+    env:
+      GOPATH: /home/runner/work/argo-cd
+    steps:
+      - uses: actions/setup-go@93397bea11091df50f3d7e59dc26a7711a8bcfbe # v4.1.0
+        with:
+          go-version: ${{ env.GOLANG_VERSION }}
+      - uses: actions/checkout@8410ad0602e1e429cee44a835ae9f77f654a6694 # v4.0.0
+        with:
+          path: ./src/argo-cd
+
+      # get image tag
+      - run: |
+          echo "tag=$(cat ./VERSION)-${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
+          echo "shorttag=$(cat ./VERSION)" >> $GITHUB_OUTPUT
+        working-directory: ./src/argo-cd
+        id: image
+
+      # login
+      - run: |
+          docker login ghcr.io --username $USERNAME --password-stdin <<< "$PASSWORD"
+        if: github.event_name == 'push'
+        env:
+          USERNAME: ${{ github.actor }}
+          PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+
+      # build
+      - uses: docker/build-push-action@2cdde995de11925a030ce8070c3d77a52ffcf1c0 #v5.3.0
+        with:
+          context: ./src/argo-cd
+          platforms: linux/amd64
+          push: ${{ github.event_name == 'push' }}
+          tags: |
+            ghcr.io/n9/argo-cd/argocd:${{ steps.image.outputs.tag }}
+            ghcr.io/n9/argo-cd/argocd:${{ steps.image.outputs.shorttag }}
+          provenance: false
+          sbom: false
+          build-args: |
+            GIT_TAG=${{env.GIT_TAG}}
+            GIT_COMMIT=${{env.GIT_COMMIT}}
+            BUILD_DATE=${{env.BUILD_DATE}}
+            GIT_TREE_STATE=${{env.GIT_TREE_STATE}}
