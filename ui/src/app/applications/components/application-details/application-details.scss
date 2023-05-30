@@ -149,9 +149,6 @@ $header: 120px;
     }
 
     @media screen and (max-width: map-get($breakpoints, xlarge)) {
-        .page__content-wrapper {
-            min-height: calc(100vh - 3 * 50px);
-        }
         .top-bar.row {
             display: block;
             .top-bar__left-side,
