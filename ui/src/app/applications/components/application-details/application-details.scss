@@ -270,10 +270,12 @@ $header: 120px;
         }
     }
 
-.top-bar__left-side,
-.top-bar__right-side {
+.top-bar:nth-of-type(2) > .top-bar__left-side,
+.top-bar:nth-of-type(2) > .top-bar__right-side {
     white-space: normal !important;
-    line-height: 40px;
+    line-height: 36px;
+    padding-top: 4px;
+    padding-bottom: 4px;
 }
 
     @media screen and (max-width: map-get($breakpoints, large)) {
