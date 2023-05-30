@@ -48,6 +48,26 @@
     }
 }
 
+.page {
+    padding-top: 0 !important;
+    height: 100%;
+    overflow: hidden;
+    display: grid;
+    grid-template-rows: min-content 1fr;
+}
+
+.page__top-bar {
+    position: static;
+    height: auto !important;
+}
+
+.page__content-wrapper {
+    display: grid;
+    grid-template-rows: min-content 1fr;
+    height: 100%;
+    min-height: auto !important;
+}
+
 .login-logout-button {
     border-radius: 3px;
     @include themify($themes) {
@@ -75,10 +95,11 @@
 }
 
 .sb-page-wrapper {
-    padding-left: $sidebar-width - 60px;
+    padding-left: $sidebar-width;
+    height: 100%;
 
     &__sidebar-collapsed {
-        padding-left: $collapsed-sidebar-width - 60px;
+        padding-left: $collapsed-sidebar-width;
         .flex-top-bar {
             left: $collapsed-sidebar-width;
         }
@@ -87,6 +108,10 @@
             &__top-bar {
                 left: $collapsed-sidebar-width !important;
             }
+            height: 100%;
+            display: grid;
+            grid-template-rows: min-content 1fr;
+            overflow: hidden;
         }
 
         .application-details__status-panel {
