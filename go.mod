@@ -2,6 +2,8 @@ module github.com/argoproj/argo-cd/v2
 
 go 1.19
 
+replace github.com/argoproj/gitops-engine => github.com/n9/gitops-engine v0.7.1-0.20230530081602-7f2ec278828d
+
 require (
 	code.gitea.io/sdk/gitea v0.15.1
 	github.com/Knetic/govaluate v3.0.1-0.20171022003610-9aa49832a739+incompatible
