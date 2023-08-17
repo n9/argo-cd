@@ -2,6 +2,8 @@ module github.com/argoproj/argo-cd/v2
 
 go 1.19
 
+replace github.com/argoproj/gitops-engine => github.com/n9/gitops-engine v0.7.1-0.20230817141123-4b3b25d8c17e
+
 require (
 	code.gitea.io/sdk/gitea v0.15.1
 	github.com/Azure/kubelogin v0.0.20
