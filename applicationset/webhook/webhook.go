@@ -25,6 +25,8 @@ import (
 	"github.com/go-playground/webhooks/v6/azuredevops"
 	"github.com/go-playground/webhooks/v6/github"
 	"github.com/go-playground/webhooks/v6/gitlab"
+	"github.com/go-playground/webhooks/v6/gogs"
+	gogsclient "github.com/gogits/go-gogs-client"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/argoproj/argo-cd/v3/util/guard"
@@ -38,6 +40,7 @@ type WebhookHandler struct {
 	sync.WaitGroup // for testing
 	github         *github.Webhook
 	gitlab         *gitlab.Webhook
+	gogs           *gogs.Webhook
 	azuredevops    *azuredevops.Webhook
 	client         client.Client
 	generators     map[string]generators.Generator
@@ -52,6 +55,7 @@ type gitGeneratorInfo struct {
 
 type prGeneratorInfo struct {
 	Azuredevops *prGeneratorAzuredevopsInfo
+	Gitea       *prGeneratorGiteaInfo
 	Github      *prGeneratorGithubInfo
 	Gitlab      *prGeneratorGitlabInfo
 }
@@ -59,6 +63,12 @@ type prGeneratorInfo struct {
 type prGeneratorAzuredevopsInfo struct {
 	Repo    string
 	Project string
+}
+
+type prGeneratorGiteaInfo struct {
+	Owner       string
+	Repo        string
+	APIHostname string
 }
 
 type prGeneratorGithubInfo struct {
@@ -87,6 +97,11 @@ func NewWebhookHandler(webhookParallelism int, argocdSettingsMgr *argosettings.S
 	if err != nil {
 		return nil, fmt.Errorf("unable to init GitLab webhook: %w", err)
 	}
+	// Gitea sends Gogs headers and Gogs compatible payloads, so it is handled by the Gogs webhook.
+	gogsHandler, err := gogs.New(gogs.Options.Secret(argocdSettings.GetWebhookGogsSecret()))
+	if err != nil {
+		return nil, fmt.Errorf("unable to init Gogs webhook: %w", err)
+	}
 	azuredevopsHandler, err := azuredevops.New(azuredevops.Options.BasicAuth(argocdSettings.GetWebhookAzureDevOpsUsername(), argocdSettings.GetWebhookAzureDevOpsPassword()))
 	if err != nil {
 		return nil, fmt.Errorf("unable to init Azure DevOps webhook: %w", err)
@@ -95,6 +110,7 @@ func NewWebhookHandler(webhookParallelism int, argocdSettingsMgr *argosettings.S
 	webhookHandler := &WebhookHandler{
 		github:      githubHandler,
 		gitlab:      gitlabHandler,
+		gogs:        gogsHandler,
 		azuredevops: azuredevopsHandler,
 		client:      client,
 		generators:  generators,
@@ -164,6 +180,9 @@ func (h *WebhookHandler) Handler(w http.ResponseWriter, r *http.Request) {
 	var err error
 
 	switch {
+	// Gogs needs to be checked before GitHub since Gogs and Gitea requests carry both Gogs and (incompatible) GitHub headers
+	case r.Header.Get("X-Gogs-Event") != "":
+		payload, err = h.gogs.Parse(r, gogs.PushEvent, gogs.PullRequestEvent)
 	case r.Header.Get("X-GitHub-Event") != "":
 		payload, err = h.github.Parse(r, github.PushEvent, github.PullRequestEvent, github.PingEvent)
 	case r.Header.Get("X-Gitlab-Event") != "":
@@ -209,6 +228,14 @@ func getGitGeneratorInfo(payload any) *gitGeneratorInfo {
 		webURL = payload.Project.WebURL
 		revision = webhook.ParseRevision(payload.Ref)
 		touchedHead = payload.Project.DefaultBranch == revision
+	case gogsclient.PushPayload:
+		// Gitea sends push events in the Gogs format.
+		if payload.Repo == nil {
+			return nil
+		}
+		webURL = payload.Repo.HTMLURL
+		revision = webhook.ParseRevision(payload.Ref)
+		touchedHead = payload.Repo.DefaultBranch == revision
 	case azuredevops.GitPushEvent:
 		// See: https://learn.microsoft.com/en-us/azure/devops/service-hooks/events?view=azure-devops#git.push
 		webURL = payload.Resource.Repository.RemoteURL
@@ -269,6 +296,31 @@ func getPRGeneratorInfo(payload any) *prGeneratorInfo {
 			ProjectPath: payload.Project.PathWithNamespace,
 			APIHostname: urlObj.Hostname(),
 		}
+	case gogsclient.PullRequestPayload:
+		// Gitea sends pull request events in the Gogs format.
+		if !slices.Contains(gogsAllowedPullRequestActions, payload.Action) {
+			return nil
+		}
+		if payload.Repository == nil || payload.Repository.Owner == nil {
+			return nil
+		}
+
+		apiURL := payload.Repository.HTMLURL
+		urlObj, err := url.Parse(apiURL)
+		if err != nil {
+			log.Errorf("Failed to parse repoURL '%s'", apiURL)
+			return nil
+		}
+
+		owner := payload.Repository.Owner.Login
+		if owner == "" {
+			owner = payload.Repository.Owner.UserName
+		}
+		info.Gitea = &prGeneratorGiteaInfo{
+			Owner:       owner,
+			Repo:        payload.Repository.Name,
+			APIHostname: urlObj.Hostname(),
+		}
 	case azuredevops.GitPullRequestEvent:
 		if !slices.Contains(azuredevopsAllowedPullRequestActions, string(payload.EventType)) {
 			return nil
@@ -296,6 +348,17 @@ var githubAllowedPullRequestActions = []string{
 	"labeled",
 	"reopened",
 	"unlabeled",
+}
+
+// gogsAllowedPullRequestActions is a list of Gogs and Gitea pull request actions that allow refresh.
+// Gitea reports new commits as "synchronized" and label changes as "label_updated" or "label_cleared".
+var gogsAllowedPullRequestActions = []gogsclient.HookIssueAction{
+	gogsclient.HOOK_ISSUE_OPENED,
+	gogsclient.HOOK_ISSUE_CLOSED,
+	gogsclient.HOOK_ISSUE_REOPENED,
+	gogsclient.HOOK_ISSUE_SYNCHRONIZED,
+	gogsclient.HOOK_ISSUE_LABEL_UPDATED,
+	gogsclient.HOOK_ISSUE_LABEL_CLEARED,
 }
 
 // gitlabAllowedPullRequestActions is a list of gitlab actions that allow refresh
@@ -397,6 +460,29 @@ func shouldRefreshPRGenerator(gen *v1alpha1.PullRequestGenerator, info *prGenera
 		}
 		if !info.Github.APIRegexp.MatchString(api) {
 			log.Debugf("%s does not match %s", api, info.Github.APIRegexp.String())
+			return false
+		}
+
+		return true
+	}
+
+	if gen.Gitea != nil && info.Gitea != nil {
+		// Gitea looks up owner and repository names case-insensitively
+		if !strings.EqualFold(gen.Gitea.Owner, info.Gitea.Owner) {
+			return false
+		}
+		if !strings.EqualFold(gen.Gitea.Repo, info.Gitea.Repo) {
+			return false
+		}
+
+		urlObj, err := url.Parse(gen.Gitea.API)
+		if err != nil {
+			log.Errorf("Failed to parse Gitea API URL '%s'", gen.Gitea.API)
+			return false
+		}
+
+		if !strings.EqualFold(urlObj.Hostname(), info.Gitea.APIHostname) {
+			log.Debugf("%s does not match %s", gen.Gitea.API, info.Gitea.APIHostname)
 			return false
 		}
 
